@@ -1,0 +1,197 @@
+account_id: dzeka
+project_slug: actions
+
+actions:
+  dzeka/actions:
+    runtime: v2
+    sources: actions
+    specs:
+      store-burn-event:
+        description: Captures and stores CCTP burn events
+        function: storeBurnEvent:storeBurnEvent
+        trigger:
+          type: transaction
+          transaction:
+            status:
+              - mined
+            filters:
+              # Ethereum
+              - network: 1
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Avalanche
+              - network: 43114
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Optimism
+              - network: 10
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Arbitrum
+              - network: 42161
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Base
+              - network: 8453
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Polygon
+              - network: 137
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Unichain
+              - network: 130
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Linea
+              - network: 59144
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Sonic
+              - network: 146
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # World Chain
+              - network: 480
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Sei
+              - network: 1329
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # BNB Smart Chain
+              - network: 56
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Ink
+              - network: 57073
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+              # Plume
+              - network: 98866
+                eventEmitted:
+                  contract:
+                    address: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+                  name: DepositForBurn
+        execution_type: parallel
+
+      match-mint-event:
+        description: Matches CCTP mint events with stored burns
+        function: matchMintEvent:matchMintEvent
+        trigger:
+          type: transaction
+          transaction:
+            status:
+              - mined
+            filters:
+              # Ethereum
+              - network: 1
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Avalanche
+              - network: 43114
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Optimism
+              - network: 10
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Arbitrum
+              - network: 42161
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Base
+              - network: 8453
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Polygon
+              - network: 137
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Unichain
+              - network: 130
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Linea
+              - network: 59144
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Sonic
+              - network: 146
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # World Chain
+              - network: 480
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Sei
+              - network: 1329
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # BNB Smart Chain
+              - network: 56
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Ink
+              - network: 57073
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+              # Plume
+              - network: 98866
+                eventEmitted:
+                  contract:
+                    address: "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64"
+                  name: MessageReceived
+        execution_type: parallel
