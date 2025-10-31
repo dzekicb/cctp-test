@@ -69,7 +69,10 @@ const storeBurnEvent = async (context, event) => {
     console.log(`[BURN] Available log addresses: ${event.logs.map(l => l.address).slice(0, 5).join(", ")}`);
     return;
   }
-  console.log(`[BURN] Found DepositForBurn log at ${burnLog.address}`);
+  const burnLogIndex = event.logs.findIndex(log => 
+    log.address?.toLowerCase() === TOKEN_MESSENGER_ADDRESS.toLowerCase()
+  );
+  console.log(`[BURN] Found DepositForBurn log at ${burnLog.address}, log index: ${burnLogIndex}`);
 
   let burnDecoded;
   try {
@@ -95,6 +98,10 @@ const storeBurnEvent = async (context, event) => {
     minFinalityThreshold,
     hookData,
   } = burnDecoded.args;
+  
+  // Log DepositForBurn details for correlation
+  console.log(`[BURN] DepositForBurn extracted: amount=${amount.toString()}, destDomain=${destinationDomain.toString()}, minFinality=${minFinalityThreshold.toString()}`);
+  console.log(`[BURN] burnToken=${burnToken}, depositor=${depositor}, mintRecipient=${ethers.hexlify(mintRecipient)}`);
 
   const messageIface = new ethers.Interface(MESSAGE_SENT_ABI);
   const candidateLogs = event.logs.filter(
@@ -110,27 +117,147 @@ const storeBurnEvent = async (context, event) => {
   console.log(`[BURN] Found ${candidateLogs.length} MessageSent candidate(s)`);
 
   // Choose the MessageSent whose header destDomain matches the burn's destinationDomain
+  // CRITICAL: Must also match sourceDomain to current chain to avoid picking wrong MessageSent
   let messageBytes;
   let matchedHeader = null;
-  for (const log of candidateLogs) {
+  
+  // Build reverse mapping: chain name -> domain for validation
+  const chainToDomain = {};
+  Object.entries(DOMAIN_TO_CHAIN).forEach(([domain, chain]) => {
+    chainToDomain[chain] = Number(domain);
+  });
+  const currentChainName = CHAIN_ID_MAP[event.network] || `chain-${event.network}`;
+  const expectedSourceDomain = chainToDomain[currentChainName];
+  
+  console.log(`[BURN] Looking for MessageSent with destDomain=${destinationDomain}`);
+  if (expectedSourceDomain !== undefined) {
+    console.log(`[BURN] Current chain: ${currentChainName} (domain ${expectedSourceDomain})`);
+    console.log(`[BURN] MessageSent MUST have: sourceDomain=${expectedSourceDomain} AND destDomain=${destinationDomain}`);
+  }
+  
+  const matchingCandidates = [];
+  const allCandidates = []; // Track ALL candidates for debugging
+  for (let i = 0; i < candidateLogs.length; i++) {
+    const log = candidateLogs[i];
+    // Find the actual log index in the transaction
+    let msgLogIndex = -1;
+    for (let j = 0; j < event.logs.length; j++) {
+      const txLog = event.logs[j];
+      if (txLog.address?.toLowerCase() === log.address?.toLowerCase() &&
+          txLog.topics && log.topics && 
+          txLog.topics.length > 0 && log.topics.length > 0 &&
+          txLog.topics[0] === log.topics[0]) {
+        msgLogIndex = j;
+        break;
+      }
+    }
     try {
       const decoded = messageIface.parseLog({ topics: log.topics, data: log.data });
       const msg = decoded.args.message;
-      const bytes = ethers.getBytes(msg);
+      
+      // CRITICAL: The message from ABI decoding might be in different format
+      // Try multiple extraction methods to ensure we get raw bytes
+      let bytes;
+      let msgHex;
+      
+      if (typeof msg === "string") {
+        // If it's already a hex string, use it directly
+        bytes = ethers.getBytes(msg);
+        msgHex = msg.toLowerCase().startsWith("0x") ? msg : "0x" + msg;
+      } else {
+        // If it's bytes/array, convert to hex
+        bytes = msg;
+        msgHex = ethers.hexlify(bytes);
+      }
+      
+      // CRITICAL: Use the raw bytes directly for hashing (not the hex string)
+      // ethers.keccak256 can accept both, but bytes might be more accurate
+      const computedHash = ethers.keccak256(bytes).toLowerCase();
+      
+      // Store all candidates for full comparison
+      const candidateInfo = {
+        index: i,
+        logIndex: msgLogIndex,
+        message: msg,
+        messageHex: msgHex,
+        bytes,
+        hash: computedHash,
+        length: bytes.length
+      };
+      
       if (bytes.length >= 12) {
         const view = new DataView(new Uint8Array(bytes.slice(0, 12)).buffer);
         const ver = view.getUint32(0, false);
         const srcDom = view.getUint32(4, false);
         const dstDom = view.getUint32(8, false);
-        if (String(dstDom) === destinationDomain.toString()) {
+        const logProximity = msgLogIndex !== -1 ? Math.abs(msgLogIndex - burnLogIndex) : "unknown";
+        
+        candidateInfo.version = ver;
+        candidateInfo.sourceDomain = srcDom;
+        candidateInfo.destDomain = dstDom;
+        candidateInfo.proximity = logProximity;
+        
+        console.log(`[BURN] MessageSent candidate #${i}: logIndex=${msgLogIndex}, proximityToBurn=${logProximity}, version=${ver}, sourceDomain=${srcDom} (${DOMAIN_TO_CHAIN[srcDom] || "unknown"}), destDomain=${dstDom} (${DOMAIN_TO_CHAIN[dstDom] || "unknown"})`);
+        console.log(`[BURN]   Computed messageHash: ${computedHash}`);
+        console.log(`[BURN]   Message length: ${bytes.length} bytes, first 64 hex: ${ethers.hexlify(bytes.slice(0, 32))}`);
+        
+        // Match BOTH sourceDomain (current chain) AND destDomain (burn destination)
+        const destMatches = String(dstDom) === destinationDomain.toString();
+        const srcMatches = expectedSourceDomain !== undefined ? srcDom === expectedSourceDomain : true;
+        
+        if (destMatches && srcMatches) {
+          // Perfect match: both domains correct
           messageBytes = msg;
           matchedHeader = { ver, srcDom, dstDom };
+          candidateInfo.selected = true;
+          console.log(`[BURN] ✓ Perfect match selected: candidate #${i} (logIndex ${msgLogIndex}), messageHash=${computedHash}`);
+          allCandidates.push(candidateInfo);
           break;
+        } else if (destMatches) {
+          // Only destDomain matches - log as candidate but don't use yet (fallback if no perfect match)
+          candidateInfo.reason = `destDomain matches but sourceDomain ${srcDom} !== expected ${expectedSourceDomain}`;
+          matchingCandidates.push({ 
+            msg, 
+            header: { ver, srcDom, dstDom }, 
+            hash: computedHash,
+            logIndex: msgLogIndex,
+            proximity: logProximity,
+            reason: candidateInfo.reason
+          });
         }
+      } else {
+        console.warn(`[BURN] MessageSent candidate #${i}: message too short (${bytes.length} bytes, need at least 12)`);
       }
-    } catch (_) {
-      // try next
+      
+      allCandidates.push(candidateInfo);
+    } catch (e) {
+      console.warn(`[BURN] Failed to parse MessageSent candidate #${i}: ${e.message}`);
     }
+  }
+  
+  // Log summary of all candidates
+  if (allCandidates.length > 0) {
+    console.log(`[BURN] SUMMARY: Found ${allCandidates.length} MessageSent event(s) total`);
+    allCandidates.forEach((c, idx) => {
+      console.log(`[BURN]   Candidate #${idx}: hash=${c.hash}, srcDom=${c.sourceDomain || "?"}, dstDom=${c.destDomain || "?"}, len=${c.length}, selected=${c.selected || false}`);
+    });
+  }
+  
+  // If no perfect match found but we have destDomain matches, warn and use closest one
+  if (!messageBytes && matchingCandidates.length > 0) {
+    console.warn(`[BURN] WARNING: No perfect match found, but found ${matchingCandidates.length} candidate(s) with matching destDomain`);
+    // Prefer candidate closest to DepositForBurn log
+    matchingCandidates.sort((a, b) => {
+      if (typeof a.proximity === "number" && typeof b.proximity === "number") {
+        return a.proximity - b.proximity;
+      }
+      return 0;
+    });
+    const selected = matchingCandidates[0];
+    console.warn(`[BURN] Using closest destDomain match (logIndex ${selected.logIndex}, proximity ${selected.proximity}): ${selected.reason}`);
+    console.warn(`[BURN] Selected messageHash: ${selected.hash}`);
+    messageBytes = selected.msg;
+    matchedHeader = selected.header;
   }
 
   // Fallback to first decodable if no header match
@@ -156,13 +283,68 @@ const storeBurnEvent = async (context, event) => {
     }
   }
 
-  const messageHash = ethers.keccak256(messageBytes).toLowerCase();
+  // CRITICAL: Based on MessageV2.sol source code analysis:
+  // - _formatMessageForRelay() sets nonce to EMPTY_NONCE (bytes32(0)) when formatting
+  // - _getNonce() extracts bytes 12-44 from message
+  // - BUT MessageReceived.nonce is NOT the nonce from the message (it's zero)!
+  // - MessageReceived.nonce IS keccak256(message) computed by attestation/relayer
+  // This is the canonical identifier for the message
+  const msgBytes = ethers.getBytes(messageBytes);
+  const messageBytesHex = ethers.hexlify(msgBytes);
+  
+  // MessageReceived.nonce is keccak256 of the full message
+  const messageHash = ethers.keccak256(messageBytesHex).toLowerCase();
+  
+  // Extract messageBody from MessageSent.message for correlation verification
+  // MessageBody starts at byte 148 (MESSAGE_BODY_INDEX = 148)
+  let messageBodyFromSent = null;
+  if (msgBytes.length > 148) {
+    const messageBodyBytes = msgBytes.slice(148);
+    messageBodyFromSent = ethers.hexlify(messageBodyBytes).toLowerCase();
+    console.log(`[BURN] Extracted messageBody (from byte 148): ${messageBodyFromSent.substring(0, 66)}...`);
+    console.log(`[BURN] messageBody length: ${messageBodyBytes.length} bytes`);
+  }
+  
+  // Also extract the nonce field from bytes 12-44 for logging (but it's zero)
+  let nonceBytes32 = null;
+  if (msgBytes.length >= 44) {
+    const nonceBytes = msgBytes.slice(12, 44);
+    nonceBytes32 = ethers.hexlify(nonceBytes).toLowerCase();
+  }
+  
+  // Log message details for verification
+  console.log(`[BURN] Message bytes length: ${msgBytes.length} bytes`);
+  console.log(`[BURN] Nonce field from message (bytes 12-44): ${nonceBytes32} (expected: all zeros)`);
+  console.log(`[BURN] Computed keccak256(message) for correlation: ${messageHash}`);
+  console.log(`[BURN] MessageReceived.nonce IS keccak256(message) - this is the correlation key`);
+  
+  // Store messageBody for correlation verification on mint side
+  // This allows us to verify that MessageReceived.messageBody matches what we sent
 
-  // Parse message structure to extract nonce safely from bytes
-  // Format: version(4) + sourceDomain(4) + destDomain(4) + nonce(8) + ...
+  // Parse message structure for logging (nonce already extracted above)
+  // Message format (CCTP V2):
+  //   version (4 bytes) = 0-3
+  //   sourceDomain (4 bytes) = 4-7
+  //   destinationDomain (4 bytes) = 8-11
+  //   nonce (32 bytes, bytes32) = 12-43  <-- Already extracted above
+  //   sender (32 bytes) = 44-75
+  //   recipient (32 bytes) = 76-107
+  //   destinationCaller (32 bytes) = 108-139
+  //   minFinalityThreshold (4 bytes) = 140-143
+  //   finalityThresholdExecuted (4 bytes) = 144-147
+  //   messageBody (dynamic) = 148+
+  
+  // Also parse nonce as uint64 for backward compatibility/logging
   let nonce = BigInt(0);
   try {
-    const msgBytes = ethers.getBytes(messageBytes);
+    if (msgBytes.length >= 20) {
+      // Parse first 8 bytes of nonce as uint64 (for logging, but nonceBytes32 is the real key)
+      const view = new DataView(new Uint8Array(msgBytes.slice(12, 20)).buffer);
+      const high = view.getUint32(0, false);
+      const low = view.getUint32(4, false);
+      nonce = (BigInt(high) << 32n) + BigInt(low);
+    }
+    
     // Log header for diagnostics
     if (matchedHeader) {
       console.log(
@@ -174,38 +356,26 @@ const storeBurnEvent = async (context, event) => {
         `[BURN] Message header | version=${dvHead.getUint32(0, false)} sourceDomain=${dvHead.getUint32(4, false)} destDomain=${dvHead.getUint32(8, false)}`,
       );
     }
-    // Best-effort parse of uint64 nonce; many chains/messages may not include a uint64 nonce here.
-    if (msgBytes.length >= 20) {
-      const view = new DataView(new Uint8Array(msgBytes.slice(12, 20)).buffer);
-      const high = view.getUint32(0, false);
-      const low = view.getUint32(4, false);
-      nonce = (BigInt(high) << 32n) + BigInt(low);
-    }
   } catch (e) {
     console.warn(`[BURN] WARNING: Failed to parse message bytes: ${e.message}`);
   }
-
-  // Validate nonce was extracted correctly
-  if (nonce === BigInt(0)) {
-    console.warn(
-      `[BURN] WARNING: Extracted nonce is 0, this may indicate parsing issue`,
-    );
-    console.warn(
-      `[BURN] Message length: ${messageBytes.length}, First 100 chars: ${messageBytes.substring(0, 100)}`,
-    );
-  }
+  
+  // Note: nonceBytes32 is already extracted above and used as messageHash
+  // The uint64 nonce is only for logging/compatibility
 
   const sourceChain = CHAIN_ID_MAP[event.network] || `chain-${event.network}`;
   const destChain =
     DOMAIN_TO_CHAIN[Number(destinationDomain)] || `domain-${destinationDomain}`;
 
   // Log correlation key for verification
-  // MessageReceived.nonce (bytes32) IS this messageHash - they must match exactly
-  console.log(`[BURN] MessageHash: ${messageHash}`);
+  // MessageReceived.nonce should be keccak256(message), but there may be encoding differences
+  console.log(`[BURN] Computed keccak256(message): ${messageHash}`);
   console.log(`[BURN] Mint will look for: cctp:burn:${sourceChain}:${messageHash}`);
-  console.log(`[BURN] MessageReceived.nonce must equal this messageHash for match`);
-
-  // Do not require a uint64 nonce. Use messageHash as the canonical key.
+  console.log(`[BURN] Expected MessageReceived.nonce: keccak256(message) (may differ due to encoding)`);
+  console.log(`[BURN] Expected MessageReceived on destination: domain ${destinationDomain} (${destChain})`);
+  
+  // NOTE: If matching still fails, MessageReceived.nonce might use different encoding
+  // Possible causes: ABI encoding differences, messageBody format, or attestation-level computation
 
   // Skip and track unsupported destination chains (not available on Tenderly)
   const unsupportedDestChains = new Set([
@@ -242,6 +412,7 @@ const storeBurnEvent = async (context, event) => {
   const burnData = {
     nonce: nonce.toString(),
     messageHash,
+    messageBody: messageBodyFromSent || null, // Extracted from MessageSent.message (byte 148+)
     sourceChain,
     sourceChainId: event.network,
     sourceTxHash: event.hash,
@@ -291,6 +462,40 @@ const storeBurnEvent = async (context, event) => {
     // Most chains complete in seconds to minutes; this provides huge safety margin
     try {
       await storage.putJson(trackingKey, burnData, { ttl: 604800 });
+      
+      // Also store a fallback index by messageBody hash in case primary hash doesn't match
+      // This allows matching even if keccak256(message) doesn't match MessageReceived.nonce
+      if (messageBodyFromSent) {
+        try {
+          const messageBodyHash = ethers.keccak256(messageBodyFromSent).toLowerCase();
+          const fallbackKey = `cctp:burn:${sourceChain}:body:${messageBodyHash}`;
+          const fallbackData = { 
+            ...burnData, 
+            lookupKey: trackingKey,
+            fallbackIndex: true,
+            messageBodyHash: messageBodyHash
+          };
+          await storage.putJson(fallbackKey, fallbackData, { ttl: 604800 });
+          console.log(`[BURN] Stored fallback index by messageBody hash: ${fallbackKey}`);
+          console.log(`[BURN] Fallback hash: ${messageBodyHash}`);
+          
+          // Verify fallback write
+          try {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const verify = await storage.getJson(fallbackKey);
+            if (verify && Object.keys(verify).length > 0) {
+              console.log(`[BURN] Fallback index verified: ${Object.keys(verify).length} fields stored`);
+            } else {
+              console.warn(`[BURN] WARNING: Fallback index write verification failed - empty object`);
+            }
+          } catch (verifyErr) {
+            console.warn(`[BURN] Could not verify fallback index: ${verifyErr && verifyErr.message ? verifyErr.message : String(verifyErr)}`);
+          }
+        } catch (fallbackErr) {
+          console.warn(`[BURN] Failed to store fallback index: ${fallbackErr && fallbackErr.message ? fallbackErr.message : String(fallbackErr)}`);
+          // Don't fail the entire operation if fallback fails
+        }
+      }
     } catch (writeErr) {
       console.error(`[BURN] ERROR: putJson failed: ${writeErr && writeErr.message ? writeErr.message : String(writeErr)}`);
       console.error(`[BURN] Failed key: ${trackingKey}`);

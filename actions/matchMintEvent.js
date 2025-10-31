@@ -91,6 +91,32 @@ const matchMintEvent = async (context, event) => {
   // According to spec: MessageReceived(bytes32 indexed messageHash) - the nonce parameter contains messageHash
   const nonceHex = (typeof nonce === "string" ? nonce : ethers.hexlify(nonce)).toLowerCase();
   console.log(`[MINT] MessageReceived.nonce (this IS the messageHash): ${nonceHex}`);
+  console.log(`[MINT] nonce type: ${typeof nonce}, normalized: ${nonceHex}`);
+  
+  // Log messageBody for correlation (should contain burnToken, amount, mintRecipient matching the burn)
+  const msgBodyBytes = ethers.getBytes(messageBody || "0x");
+  const messageBodyHex = ethers.hexlify(msgBodyBytes).toLowerCase();
+  console.log(`[MINT] messageBody length: ${msgBodyBytes.length} bytes`);
+  if (msgBodyBytes.length > 0) {
+    console.log(`[MINT] messageBody (full): ${messageBodyHex.substring(0, 130)}...`);
+    console.log(`[MINT] messageBody first 64 hex: ${ethers.hexlify(msgBodyBytes.slice(0, 32))}`);
+    // messageBody structure: burnToken(32) + amount(32) + mintRecipient(32) + ...
+    if (msgBodyBytes.length >= 96) {
+      const bodyBurnToken = ethers.getAddress(ethers.hexlify(msgBodyBytes.slice(0, 32).slice(-20)));
+      const bodyAmount = ethers.getBigInt(ethers.hexlify(msgBodyBytes.slice(32, 64)));
+      const bodyMintRecipient = ethers.getAddress(ethers.hexlify(msgBodyBytes.slice(64, 96).slice(-20)));
+      console.log(`[MINT] messageBody parsed: burnToken=${bodyBurnToken}, amount=${bodyAmount.toString()}, mintRecipient=${bodyMintRecipient}`);
+    }
+  }
+  
+  // CRITICAL DEBUG: Try to reconstruct what the full message should look like
+  // Message structure: version(4) + sourceDomain(4) + destDomain(4) + nonce(8) + messageBody
+  // We know sourceDomain and can infer version=1, but we don't know the original nonce from MessageSent
+  // However, we can verify: keccak256(reconstructed message) should equal MessageReceived.nonce
+  console.log(`[MINT] DEBUG: Attempting to verify messageHash computation...`);
+  console.log(`[MINT]   SourceDomain from event: ${sourceDomain} (${DOMAIN_TO_CHAIN[Number(sourceDomain)]})`);
+  console.log(`[MINT]   This nonce should match: keccak256(MessageSent.message) from source chain`);
+  console.log(`[MINT]   If it doesn't match, the burn side computed hash incorrectly or used wrong MessageSent`);
 
   const sourceChain = DOMAIN_TO_CHAIN[Number(sourceDomain)];
   const destChain = CHAIN_ID_MAP[event.network] || `chain-${event.network}`;
@@ -130,6 +156,9 @@ const matchMintEvent = async (context, event) => {
   );
   console.log(`[MINT] Lookup key: ${trackingKey}`);
   console.log(`[MINT] This key should match burn storage: cctp:burn:${sourceChain}:<messageHash from MessageSent>`);
+  console.log(`[MINT] MessageReceived.nonce (bytes32): ${nonceHex}`);
+  console.log(`[MINT] Expected burn record key: cctp:burn:${sourceChain}:${nonceHex}`);
+  console.log(`[MINT] If burn occurred on ${sourceChain}, it should have stored messageHash: ${nonceHex}`);
 
   let burnData;
   let burnFound = false;
@@ -165,6 +194,50 @@ const matchMintEvent = async (context, event) => {
     console.log(`[MINT]   1. Burn hasn't occurred yet (timing issue)`);
     console.log(`[MINT]   2. Burn action didn't trigger/capture this transfer`);
     console.log(`[MINT]   3. MessageHash mismatch (burn stored with different hash)`);
+    
+    // Fallback: Try to find burn by messageBody hash if available
+    if (messageBodyHex && messageBodyHex.length > 2) {
+      const messageBodyHash = ethers.keccak256(messageBodyHex).toLowerCase();
+      const fallbackKey = `cctp:burn:${sourceChain}:body:${messageBodyHash}`;
+      console.log(`[MINT] Attempting fallback lookup by messageBody hash: ${fallbackKey}`);
+      console.log(`[MINT] Computed messageBody hash: ${messageBodyHash}`);
+      try {
+        const fallbackBurn = await storage.getJson(fallbackKey);
+        // Handle Tenderly quirk: getJson returns {} for non-existent keys
+        if (fallbackBurn && typeof fallbackBurn === "object") {
+          const keys = Object.keys(fallbackBurn);
+          if (keys.length > 0) {
+            console.log(`[MINT] ✓ Found burn via messageBody hash fallback! (${keys.length} fields)`);
+            console.log(`[MINT] Primary lookup key (from fallback): ${fallbackBurn.lookupKey || "not set"}`);
+            
+            // If fallback has lookupKey, also try to get the full primary record for consistency
+            if (fallbackBurn.lookupKey) {
+              try {
+                const primaryRecord = await storage.getJson(fallbackBurn.lookupKey);
+                if (primaryRecord && Object.keys(primaryRecord).length > 0) {
+                  console.log(`[MINT] Retrieved primary burn record from lookupKey`);
+                  burnData = primaryRecord; // Use primary record (more complete)
+                } else {
+                  console.log(`[MINT] Primary record not found, using fallback record`);
+                  burnData = fallbackBurn; // Use fallback record
+                }
+              } catch (_) {
+                console.log(`[MINT] Could not retrieve primary record, using fallback record`);
+                burnData = fallbackBurn; // Use fallback record
+              }
+            } else {
+              burnData = fallbackBurn; // Use fallback record directly
+            }
+            
+            burnFound = true;
+          } else {
+            console.log(`[MINT] Fallback key exists but is empty {} (Tenderly quirk - key doesn't exist)`);
+          }
+        }
+      } catch (err) {
+        console.log(`[MINT] Fallback lookup error: ${err && err.message ? err.message : String(err)}`);
+      }
+    }
   }
 
   const currentTimestamp = Math.floor(Date.now() / 1000);
@@ -181,6 +254,22 @@ const matchMintEvent = async (context, event) => {
   const hasBurnData = burnFound && missingFields.length === 0;
 
   if (hasBurnData) {
+    // Verify messageBody matches for additional correlation check
+    if (burnData.messageBody && messageBodyHex) {
+      const burnMessageBody = typeof burnData.messageBody === "string" 
+        ? burnData.messageBody.toLowerCase() 
+        : ethers.hexlify(burnData.messageBody).toLowerCase();
+      const bodiesMatch = burnMessageBody === messageBodyHex;
+      if (bodiesMatch) {
+        console.log(`[MINT] ✓ messageBody matches - confirmed same transfer`);
+      } else {
+        console.warn(`[MINT] WARNING: messageBody mismatch!`);
+        console.warn(`[MINT]   Burn messageBody: ${burnMessageBody.substring(0, 66)}...`);
+        console.warn(`[MINT]   Mint messageBody: ${messageBodyHex.substring(0, 66)}...`);
+        // Still proceed with match since nonce matched, but log the discrepancy
+      }
+    }
+    
     let duration = null;
     if (burnData.burnTimestamp) {
       duration = currentTimestamp - burnData.burnTimestamp;

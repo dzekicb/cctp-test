@@ -120,9 +120,155 @@ const notifyOnSuccess = async (context, event) => {
 		return;
 	}
 
+	// Format amount for display (USDC has 6 decimals)
+	const formatUSDC = (amountStr) => {
+		try {
+			const amountBigInt = BigInt(amountStr);
+			const decimals = 6; // USDC has 6 decimals
+			const divisor = BigInt(10 ** decimals);
+			const whole = amountBigInt / divisor;
+			const fractional = amountBigInt % divisor;
+			
+			if (fractional === 0n) {
+				return `${whole.toLocaleString()} USDC`;
+			}
+			
+			const fractionalStr = fractional.toString().padStart(decimals, "0");
+			const trimmed = fractionalStr.replace(/0+$/, "");
+			return `${whole.toLocaleString()}.${trimmed} USDC`;
+		} catch (e) {
+			return `${amountStr} (raw)`;
+		}
+	};
+
+	// Format duration
+	const formatDuration = (seconds) => {
+		if (!seconds) return "N/A";
+		if (seconds < 60) return `${seconds}s`;
+		if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+		const hours = Math.floor(seconds / 3600);
+		const mins = Math.floor((seconds % 3600) / 60);
+		return `${hours}h ${mins}m`;
+	};
+
+	// Get explorer URLs (Tenderly format)
+	const getExplorerUrl = (txHash) => {
+		return `https://tdly.co/tx/${txHash}`;
+	};
+
+	// Capitalize first letter of chain name
+	const capitalizeChain = (chainName) => {
+		if (!chainName) return chainName;
+		return chainName.charAt(0).toUpperCase() + chainName.slice(1);
+	};
+
 	const now = Math.floor(Date.now() / 1000);
+	const formattedAmount = formatUSDC(completed.amount);
+	const duration = formatDuration(completed.durationSeconds);
+	const transferType = completed.transferType || "unknown";
+	const typeEmoji = transferType === "fast" ? "⚡" : "📋";
+	const typeColor = transferType === "fast" ? "#FF6B6B" : "#4ECDC4";
+	
+	const sourceChainName = capitalizeChain(completed.sourceChain);
+	const destChainName = capitalizeChain(completed.destinationChain || destChain);
+	
+	const sourceExplorer = getExplorerUrl(completed.sourceTxHash);
+	const destExplorer = getExplorerUrl(completed.destinationTxHash || event.hash);
+
+	// Create rich Slack Block Kit message
+	const blocks = [
+		{
+			type: "header",
+			text: {
+				type: "plain_text",
+				text: `${typeEmoji} CCTP Transfer Completed`,
+				emoji: true,
+			},
+		},
+		{
+			type: "divider",
+		},
+		{
+			type: "section",
+			fields: [
+				{
+					type: "mrkdwn",
+					text: `*🔄 Route*\n*${sourceChainName}* → *${destChainName}*`,
+				},
+				{
+					type: "mrkdwn",
+					text: `*${typeEmoji} Type*\n${transferType.toUpperCase()}`,
+				},
+				{
+					type: "mrkdwn",
+					text: `*💰 Amount*\n*${formattedAmount}*`,
+				},
+				{
+					type: "mrkdwn",
+					text: `*⏱️ Duration*\n${duration}`,
+				},
+			],
+		},
+		{
+			type: "divider",
+		},
+		{
+			type: "section",
+			fields: [
+				{
+					type: "mrkdwn",
+					text: `*📤 Source Chain*\n<${sourceExplorer}|${sourceChainName}>\nBlock: ${completed.sourceBlockNumber || "N/A"}`,
+				},
+				{
+					type: "mrkdwn",
+					text: `*📥 Destination Chain*\n<${destExplorer}|${destChainName}>\nBlock: ${completed.destinationBlockNumber || event.blockNumber || "N/A"}`,
+				},
+			],
+		},
+		{
+			type: "section",
+			text: {
+				type: "mrkdwn",
+				text: `*🔑 Message Hash*\n\`${nonceHex}\``,
+			},
+		},
+	];
+
+	// Add additional context information
+	const contextElements = [];
+	
+	if (completed.minFinalityThreshold) {
+		contextElements.push({
+			type: "mrkdwn",
+			text: `Finality: ${completed.minFinalityThreshold}`,
+		});
+	}
+	
+	if (completed.depositor) {
+		contextElements.push({
+			type: "mrkdwn",
+			text: `Depositor: \`${completed.depositor}\``,
+		});
+	}
+	
+	if (completed.maxFee && completed.maxFee !== "0") {
+		const feeFormatted = formatUSDC(completed.maxFee);
+		contextElements.push({
+			type: "mrkdwn",
+			text: `Max Fee: ${feeFormatted}`,
+		});
+	}
+
+	if (contextElements.length > 0) {
+		blocks.push({
+			type: "context",
+			elements: contextElements,
+		});
+	}
+
 	const msg = {
-		text: `CCTP transfer completed: ${completed.sourceChain} -> ${completed.destinationChain || destChain} | amount=${amount} | messageHash=${nonceHex} | type=${completed.transferType || "unknown"}`,
+		blocks: blocks,
+		text: `CCTP ${transferType} transfer: ${formattedAmount} from ${sourceChainName} to ${destChainName}`, // Fallback text
 	};
 
 	try {
@@ -132,7 +278,7 @@ const notifyOnSuccess = async (context, event) => {
 			body: JSON.stringify(msg),
 		});
 		await storage.putJson(notifiedKey, { notified: true, at: now }, { ttl: 2592000 });
-		console.log(`[SUCCESS] Slack notification sent.`);
+		console.log(`[SUCCESS] Slack notification sent with rich formatting.`);
 	} catch (e) {
 		console.error(`[SUCCESS] ERROR sending Slack notification: ${e && e.message ? e.message : String(e)}`);
 	}
