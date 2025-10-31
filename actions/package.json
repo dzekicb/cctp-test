@@ -1,16 +1,16 @@
 {
-    "name": "actions",
-    "scripts": {
-        "build": "tsc"
-    },
-    "devDependencies": {
-        "typescript": "^4.9.5"
-    },
-    "dependencies": {
-        "@tenderly/actions": "^0.3.0",
-        "@tenderly/sdk": "^0.2.7",
-        "@types/node": "^20.8.10",
-        "axios": "^1.6.0",
-        "ethers": "^6.9.0"
-    }
+  "name": "actions",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.5"
+  },
+  "dependencies": {
+    "@tenderly/actions": "^0.2.162",
+    "@tenderly/sdk": "^0.2.7",
+    "@types/node": "^20.8.10",
+    "axios": "^1.6.0",
+    "ethers": "^6.9.0"
+  }
 }
