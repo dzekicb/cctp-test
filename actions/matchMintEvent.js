@@ -93,11 +93,27 @@ const matchMintEvent = async (context, event) => {
     return;
   }
 
-  // Skip if source is Solana (non-EVM, won't have burn data)
-  if (sourceChain === "solana") {
+  // Skip and track unsupported source chains (not available on Tenderly)
+  const unsupportedSourceChains = new Set([
+    "solana",
+    "hyperevm",
+    "codex",
+    "xdc",
+    "arc-testnet",
+  ]);
+  if (unsupportedSourceChains.has(sourceChain)) {
     console.log(
-      `[MINT] Skipping | Source is Solana (non-EVM) | Nonce: ${nonceValue}`,
+      `[MINT] Skipping | Source unsupported on Tenderly | ${sourceChain} -> ${destChain} | Nonce: ${nonceValue}`,
     );
+    try {
+      const statKey = `cctp:stats:unsupported_source:${sourceChain}`;
+      const existing = (await storage.getJson(statKey)) || { count: 0 };
+      await storage.putJson(
+        statKey,
+        { count: (existing.count || 0) + 1, lastSeen: Math.floor(Date.now() / 1000) },
+        { ttl: 2592000 },
+      );
+    } catch (_) {}
     return;
   }
 

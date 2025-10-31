@@ -119,10 +119,27 @@ const storeBurnEvent = async (context, event) => {
 
   const messageBytes = messageSentDecoded.args.message;
 
-  // Parse message structure to extract nonce
-  // Format: version(4) + sourceDomain(4) + destDomain(4) + nonce(8) + sender(32) + recipient(32) + ...
-  const nonceHex = messageBytes.slice(26, 42); // Extract 8 bytes (16 hex chars) starting at position 12 bytes
-  const nonce = BigInt("0x" + nonceHex);
+  // Parse message structure to extract nonce safely from bytes
+  // Format: version(4) + sourceDomain(4) + destDomain(4) + nonce(8) + ...
+  let nonce = BigInt(0);
+  try {
+    const msgBytes = ethers.getBytes(messageBytes);
+    // Ensure the message contains at least the first 20 bytes (4 + 4 + 4 + 8)
+    if (msgBytes.length >= 20) {
+      // Nonce occupies bytes [12, 20)
+      const view = new DataView(new Uint8Array(msgBytes.slice(12, 20)).buffer);
+      // Read as big-endian uint64
+      const high = view.getUint32(0, false);
+      const low = view.getUint32(4, false);
+      nonce = (BigInt(high) << 32n) + BigInt(low);
+    } else {
+      console.warn(
+        `[BURN] WARNING: Message too short to contain nonce. Length: ${msgBytes.length} bytes`,
+      );
+    }
+  } catch (e) {
+    console.warn(`[BURN] WARNING: Failed to parse message bytes for nonce: ${e.message}`);
+  }
 
   // Validate nonce was extracted correctly
   if (nonce === BigInt(0)) {
@@ -138,11 +155,27 @@ const storeBurnEvent = async (context, event) => {
   const destChain =
     DOMAIN_TO_CHAIN[Number(destinationDomain)] || `domain-${destinationDomain}`;
 
-  // Skip if destination is Solana (non-EVM, can't be matched)
-  if (destChain === "solana") {
+  // Skip and track unsupported destination chains (not available on Tenderly)
+  const unsupportedDestChains = new Set([
+    "solana",
+    "hyperevm",
+    "codex",
+    "xdc",
+    "arc-testnet",
+  ]);
+  if (unsupportedDestChains.has(destChain)) {
     console.log(
-      `[BURN] Skipping | Destination is Solana (non-EVM) | Nonce: ${nonce}`,
+      `[BURN] Skipping | Destination unsupported on Tenderly | ${sourceChain} -> ${destChain} | Nonce: ${nonce}`,
     );
+    try {
+      const statKey = `cctp:stats:unsupported_dest:${destChain}`;
+      const existing = (await storage.getJson(statKey)) || { count: 0 };
+      await storage.putJson(
+        statKey,
+        { count: (existing.count || 0) + 1, lastSeen: Math.floor(Date.now() / 1000) },
+        { ttl: 2592000 },
+      );
+    } catch (_) {}
     return;
   }
 
