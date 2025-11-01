@@ -241,6 +241,7 @@ const notifyOnSuccess = async (context, event) => {
 			body: JSON.stringify(msg),
 		});
 		await storage.putJson(notifiedKey, { notified: true, at: Math.floor(Date.now() / 1000) }, { ttl: 2592000 });
+		await storage.delete(completedKey);
 	} catch (e) {
 		console.error(`[SUCCESS] Error sending Slack notification: ${e.message}`);
 	}
