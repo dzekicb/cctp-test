@@ -75,15 +75,6 @@ const notifyOnSuccess = async (context, event) => {
 
 	const nonceHex = (typeof nonce === "string" ? nonce : ethers.hexlify(nonce)).toLowerCase();
 	const completedKey = `cctp:completed:${sourceChain}:${nonceHex}`;
-	const notifiedKey = `cctp:notified:${sourceChain}:${nonceHex}`;
-
-	let alreadyNotified;
-	try {
-		alreadyNotified = await storage.getJson(notifiedKey);
-		if (alreadyNotified && Object.keys(alreadyNotified).length > 0 && alreadyNotified.notified) {
-			return;
-		}
-	} catch (_) {}
 
 	let completed;
 	try {
@@ -240,7 +231,6 @@ const notifyOnSuccess = async (context, event) => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(msg),
 		});
-		await storage.putJson(notifiedKey, { notified: true, at: Math.floor(Date.now() / 1000) }, { ttl: 2592000 });
 		await storage.delete(completedKey);
 	} catch (e) {
 		console.error(`[SUCCESS] Error sending Slack notification: ${e.message}`);
