@@ -251,30 +251,24 @@ const storeBurnEvent = async (context, event) => {
   const transferType = minFinality <= 1000 ? "fast" : "standard";
 
   const burnData = {
-    nonce: nonce.toString(),
-    messageHash,
-    messageBody: messageBodyFromSent || null,
-    sourceChain,
-    sourceChainId: event.network,
-    sourceTxHash: event.hash,
-    sourceBlockNumber: event.blockNumber,
-    burnToken,
-    amount: amount.toString(),
-    depositor,
-    mintRecipient,
-    destinationDomain: destinationDomain.toString(),
-    destinationChain: destChain,
-    destinationTokenMessenger,
-    destinationCaller,
-    maxFee: maxFee.toString(),
-    minFinalityThreshold: minFinalityThreshold.toString(),
-    transferType,
-    hookData: hookData,
-    burnTimestamp: currentTimestamp,
-    status: "pending",
+    n: nonce.toString(),
+    h: messageHash,
+    sc: sourceChain,
+    sci: event.network,
+    stx: event.hash,
+    sblk: event.blockNumber,
+    tk: burnToken,
+    amt: amount.toString(),
+    dep: depositor,
+    dd: Number(destinationDomain),
+    dc: destChain,
+    mf: maxFee.toString(),
+    fth: Number(minFinalityThreshold),
+    tt: transferType,
+    bt: currentTimestamp,
   };
 
-  const requiredFields = ["nonce", "messageHash", "sourceChain", "amount", "destinationDomain"];
+  const requiredFields = ["n", "h", "sc", "amt", "dd"];
   const missingFields = requiredFields.filter((f) => !burnData[f]);
   if (missingFields.length > 0) {
     console.error(`[BURN] Missing required fields: ${missingFields.join(", ")}`);
@@ -288,13 +282,7 @@ const storeBurnEvent = async (context, event) => {
       try {
         const messageBodyHash = ethers.keccak256(messageBodyFromSent).toLowerCase();
         const fallbackKey = `cctp:burn:${sourceChain}:body:${messageBodyHash}`;
-        const fallbackData = {
-          ...burnData,
-          lookupKey: trackingKey,
-          fallbackIndex: true,
-          messageBodyHash: messageBodyHash
-        };
-        await storage.putJson(fallbackKey, fallbackData, { ttl: 604800 });
+        await storage.putJson(fallbackKey, { k: trackingKey }, { ttl: 604800 });
       } catch (_) {}
     }
   } catch (writeErr) {
@@ -309,43 +297,37 @@ const storeBurnEvent = async (context, event) => {
       const orphanedMintData = await storage.getJson(orphanedIndex.pointer).catch(() => null);
       if (orphanedMintData) {
         let duration = null;
-        if (burnData.burnTimestamp && orphanedMintData.mintTimestamp) {
-          duration = orphanedMintData.mintTimestamp - burnData.burnTimestamp;
+        if (burnData.bt && orphanedMintData.mt) {
+          duration = orphanedMintData.mt - burnData.bt;
         }
 
         const completedKey = `cctp:completed:${sourceChain}:${messageHash}`;
         const completed = {
-          nonce: burnData.nonce,
-          messageHash: messageHash,
-          messageBody: burnData.messageBody,
-          sourceChain: burnData.sourceChain,
-          sourceChainId: burnData.sourceChainId,
-          sourceTxHash: burnData.sourceTxHash,
-          sourceBlockNumber: burnData.sourceBlockNumber,
-          burnToken: burnData.burnToken,
-          amount: burnData.amount,
-          depositor: burnData.depositor,
-          mintRecipient: burnData.mintRecipient,
-          destinationDomain: burnData.destinationDomain,
-          destinationChain: orphanedMintData.destinationChain || destChain,
-          destinationChainId: orphanedMintData.destinationChainId || null,
-          destinationTxHash: orphanedMintData.destinationTxHash || null,
-          destinationBlockNumber: orphanedMintData.destinationBlockNumber || null,
-          destinationTokenMessenger: burnData.destinationTokenMessenger,
-          destinationCaller: burnData.destinationCaller,
-          maxFee: burnData.maxFee,
-          minFinalityThreshold: burnData.minFinalityThreshold,
-          transferType: burnData.transferType || "unknown",
-          hookData: burnData.hookData,
-          burnTimestamp: burnData.burnTimestamp,
-          mintTimestamp: orphanedMintData.mintTimestamp || null,
-          messageReceived: {
-            caller: orphanedMintData.callerAddress,
-            sender: orphanedMintData.senderBytes32,
-            finalityThresholdExecuted: orphanedMintData.finalityThreshold,
+          n: burnData.n,
+          h: messageHash,
+          sc: burnData.sc,
+          sci: burnData.sci,
+          stx: burnData.stx,
+          sblk: burnData.sblk,
+          tk: burnData.tk,
+          amt: burnData.amt,
+          dep: burnData.dep,
+          dd: burnData.dd,
+          dc: orphanedMintData.dc || destChain,
+          dci: orphanedMintData.dci || null,
+          dtx: orphanedMintData.dtx || null,
+          dblk: orphanedMintData.dblk || null,
+          mf: burnData.mf,
+          fth: burnData.fth,
+          tt: burnData.tt,
+          bt: burnData.bt,
+          mt: orphanedMintData.mt || null,
+          mr: {
+            c: orphanedMintData.c || null,
+            s: orphanedMintData.s || null,
+            ft: orphanedMintData.ft || null,
           },
-          status: "completed",
-          durationSeconds: duration,
+          dur: duration,
         };
 
         await storage.putJson(completedKey, completed, { ttl: 2592000 });
@@ -388,12 +370,12 @@ const storeBurnEvent = async (context, event) => {
             return chainName.charAt(0).toUpperCase() + chainName.slice(1);
           };
 
-          const formattedAmount = formatUSDC(completed.amount);
-          const duration = formatDuration(completed.durationSeconds);
-          const transferType = completed.transferType || "unknown";
+          const formattedAmount = formatUSDC(completed.amt);
+          const duration = formatDuration(completed.dur);
+          const transferType = completed.tt || "unknown";
           const typeEmoji = transferType === "fast" ? "⚡" : "📋";
-          const sourceChainName = capitalizeChain(completed.sourceChain);
-          const destChainName = capitalizeChain(completed.destinationChain || destChain);
+          const sourceChainName = capitalizeChain(completed.sc);
+          const destChainName = capitalizeChain(completed.dc || destChain);
 
           const blocks = [
             {
@@ -436,11 +418,11 @@ const storeBurnEvent = async (context, event) => {
               fields: [
                 {
                   type: "mrkdwn",
-                  text: `*📤 Source Chain*\n<https://tdly.co/tx/${completed.sourceTxHash}|${sourceChainName}>\nBlock: ${completed.sourceBlockNumber || "N/A"}`,
+                  text: `*📤 Source Chain*\n<https://tdly.co/tx/${completed.stx}|${sourceChainName}>\nBlock: ${completed.sblk || "N/A"}`,
                 },
                 {
                   type: "mrkdwn",
-                  text: `*📥 Destination Chain*\n<https://tdly.co/tx/${completed.destinationTxHash || "N/A"}|${destChainName}>\nBlock: ${completed.destinationBlockNumber || "N/A"}`,
+                  text: `*📥 Destination Chain*\n<https://tdly.co/tx/${completed.dtx || "N/A"}|${destChainName}>\nBlock: ${completed.dblk || "N/A"}`,
                 },
               ],
             },
@@ -454,20 +436,20 @@ const storeBurnEvent = async (context, event) => {
           ];
 
           const contextElements = [];
-          if (completed.minFinalityThreshold) {
+          if (completed.fth) {
             contextElements.push({
               type: "mrkdwn",
-              text: `Finality: ${completed.minFinalityThreshold}`,
+              text: `Finality: ${completed.fth}`,
             });
           }
-          if (completed.depositor) {
+          if (completed.dep) {
             contextElements.push({
               type: "mrkdwn",
-              text: `Depositor: \`${completed.depositor}\``,
+              text: `Depositor: \`${completed.dep}\``,
             });
           }
-          if (completed.maxFee && completed.maxFee !== "0") {
-            const feeFormatted = formatUSDC(completed.maxFee);
+          if (completed.mf && completed.mf !== "0") {
+            const feeFormatted = formatUSDC(completed.mf);
             contextElements.push({
               type: "mrkdwn",
               text: `Max Fee: ${feeFormatted}`,

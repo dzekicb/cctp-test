@@ -129,26 +129,15 @@ const matchMintEvent = async (context, event) => {
     const messageBodyHash = ethers.keccak256(messageBodyHex).toLowerCase();
     const fallbackKey = `cctp:burn:${sourceChain}:body:${messageBodyHash}`;
     try {
-      const fallbackBurn = await storage.getJson(fallbackKey);
-      if (fallbackBurn && typeof fallbackBurn === "object") {
-        const keys = Object.keys(fallbackBurn);
-        if (keys.length > 0) {
-          if (fallbackBurn.lookupKey) {
-            try {
-              const primaryRecord = await storage.getJson(fallbackBurn.lookupKey);
-              if (primaryRecord && Object.keys(primaryRecord).length > 0) {
-                burnData = primaryRecord;
-              } else {
-                burnData = fallbackBurn;
-              }
-            } catch (_) {
-              burnData = fallbackBurn;
-            }
-          } else {
-            burnData = fallbackBurn;
+      const fallbackIndex = await storage.getJson(fallbackKey);
+      if (fallbackIndex && typeof fallbackIndex === "object" && fallbackIndex.k) {
+        try {
+          const primaryRecord = await storage.getJson(fallbackIndex.k);
+          if (primaryRecord && Object.keys(primaryRecord).length > 0) {
+            burnData = primaryRecord;
+            burnFound = true;
           }
-          burnFound = true;
-        }
+        } catch (_) {}
       }
     } catch (_) {}
   }
@@ -156,9 +145,9 @@ const matchMintEvent = async (context, event) => {
   const currentTimestamp = Math.floor(Date.now() / 1000);
 
   const requiredFields = {
-    nonce: burnData?.nonce,
-    sourceChain: burnData?.sourceChain,
-    amount: burnData?.amount,
+    n: burnData?.n,
+    sc: burnData?.sc,
+    amt: burnData?.amt,
   };
   const missingFields = Object.entries(requiredFields)
     .filter(([key, value]) => !value)
@@ -167,41 +156,36 @@ const matchMintEvent = async (context, event) => {
 
   if (hasBurnData) {
     let duration = null;
-    if (burnData.burnTimestamp) {
-      duration = currentTimestamp - burnData.burnTimestamp;
+    if (burnData.bt) {
+      duration = currentTimestamp - burnData.bt;
     }
 
     const completeTransfer = {
-      nonce: burnData.nonce,
-      messageHash: burnData.messageHash || nonceHex,
-      sourceChain: burnData.sourceChain,
-      sourceChainId: burnData.sourceChainId,
-      sourceTxHash: burnData.sourceTxHash,
-      sourceBlockNumber: burnData.sourceBlockNumber,
-      burnToken: burnData.burnToken,
-      amount: burnData.amount,
-      depositor: burnData.depositor,
-      mintRecipient: burnData.mintRecipient,
-      destinationDomain: burnData.destinationDomain,
-      destinationChain: destChain,
-      destinationChainId: event.network,
-      destinationTxHash: event.hash,
-      destinationBlockNumber: event.blockNumber,
-      destinationTokenMessenger: burnData.destinationTokenMessenger,
-      destinationCaller: burnData.destinationCaller,
-      maxFee: burnData.maxFee,
-      minFinalityThreshold: burnData.minFinalityThreshold,
-      transferType: burnData.transferType || "unknown",
-      hookData: burnData.hookData,
-      burnTimestamp: burnData.burnTimestamp,
-      mintTimestamp: currentTimestamp,
-      messageReceived: {
-        caller,
-        sender,
-        finalityThresholdExecuted: finalityThresholdExecuted.toString(),
+      n: burnData.n,
+      h: burnData.h || nonceHex,
+      sc: burnData.sc,
+      sci: burnData.sci,
+      stx: burnData.stx,
+      sblk: burnData.sblk,
+      tk: burnData.tk,
+      amt: burnData.amt,
+      dep: burnData.dep,
+      dd: burnData.dd,
+      dc: destChain,
+      dci: event.network,
+      dtx: event.hash,
+      dblk: event.blockNumber,
+      mf: burnData.mf,
+      fth: burnData.fth,
+      tt: burnData.tt || "unknown",
+      bt: burnData.bt,
+      mt: currentTimestamp,
+      mr: {
+        c: caller,
+        s: sender,
+        ft: Number(finalityThresholdExecuted),
       },
-      status: "completed",
-      durationSeconds: duration,
+      dur: duration,
     };
 
     const completedKey = `cctp:completed:${sourceChain}:${nonceHex}`;
@@ -246,12 +230,12 @@ const matchMintEvent = async (context, event) => {
           return chainName.charAt(0).toUpperCase() + chainName.slice(1);
         };
 
-        const formattedAmount = formatUSDC(completeTransfer.amount);
-        const duration = formatDuration(completeTransfer.durationSeconds);
-        const transferType = completeTransfer.transferType || "unknown";
+        const formattedAmount = formatUSDC(completeTransfer.amt);
+        const duration = formatDuration(completeTransfer.dur);
+        const transferType = completeTransfer.tt || "unknown";
         const typeEmoji = transferType === "fast" ? "⚡" : "📋";
-        const sourceChainName = capitalizeChain(completeTransfer.sourceChain);
-        const destChainName = capitalizeChain(completeTransfer.destinationChain || destChain);
+        const sourceChainName = capitalizeChain(completeTransfer.sc);
+        const destChainName = capitalizeChain(completeTransfer.dc || destChain);
 
         const blocks = [
           {
@@ -292,14 +276,14 @@ const matchMintEvent = async (context, event) => {
           {
             type: "section",
             fields: [
-              {
-                type: "mrkdwn",
-                text: `*📤 Source Chain*\n<https://tdly.co/tx/${completeTransfer.sourceTxHash}|${sourceChainName}>\nBlock: ${completeTransfer.sourceBlockNumber || "N/A"}`,
-              },
-              {
-                type: "mrkdwn",
-                text: `*📥 Destination Chain*\n<https://tdly.co/tx/${completeTransfer.destinationTxHash || event.hash}|${destChainName}>\nBlock: ${completeTransfer.destinationBlockNumber || event.blockNumber || "N/A"}`,
-              },
+                {
+                  type: "mrkdwn",
+                  text: `*📤 Source Chain*\n<https://tdly.co/tx/${completeTransfer.stx}|${sourceChainName}>\nBlock: ${completeTransfer.sblk || "N/A"}`,
+                },
+                {
+                  type: "mrkdwn",
+                  text: `*📥 Destination Chain*\n<https://tdly.co/tx/${completeTransfer.dtx || event.hash}|${destChainName}>\nBlock: ${completeTransfer.dblk || event.blockNumber || "N/A"}`,
+                },
             ],
           },
           {
@@ -311,26 +295,26 @@ const matchMintEvent = async (context, event) => {
           },
         ];
 
-        const contextElements = [];
-        if (completeTransfer.minFinalityThreshold) {
-          contextElements.push({
-            type: "mrkdwn",
-            text: `Finality: ${completeTransfer.minFinalityThreshold}`,
-          });
-        }
-        if (completeTransfer.depositor) {
-          contextElements.push({
-            type: "mrkdwn",
-            text: `Depositor: \`${completeTransfer.depositor}\``,
-          });
-        }
-        if (completeTransfer.maxFee && completeTransfer.maxFee !== "0") {
-          const feeFormatted = formatUSDC(completeTransfer.maxFee);
-          contextElements.push({
-            type: "mrkdwn",
-            text: `Max Fee: ${feeFormatted}`,
-          });
-        }
+          const contextElements = [];
+          if (completeTransfer.fth) {
+            contextElements.push({
+              type: "mrkdwn",
+              text: `Finality: ${completeTransfer.fth}`,
+            });
+          }
+          if (completeTransfer.dep) {
+            contextElements.push({
+              type: "mrkdwn",
+              text: `Depositor: \`${completeTransfer.dep}\``,
+            });
+          }
+          if (completeTransfer.mf && completeTransfer.mf !== "0") {
+            const feeFormatted = formatUSDC(completeTransfer.mf);
+            contextElements.push({
+              type: "mrkdwn",
+              text: `Max Fee: ${feeFormatted}`,
+            });
+          }
 
         if (contextElements.length > 0) {
           blocks.push({
@@ -369,20 +353,18 @@ const matchMintEvent = async (context, event) => {
     const orphanedIndexKey = `cctp:orphanedIndex:${sourceChain}:${nonceHex}`;
 
     const orphanedData = {
-      destinationChain: destChain,
-      destinationChainId: event.network.toString(),
-      destinationTxHash: event.hash,
-      destinationBlockNumber: event.blockNumber.toString(),
-      nonce: burnData && burnData.nonce ? burnData.nonce : undefined,
-      messageHash: nonceHex,
-      sourceDomain: sourceDomain.toString(),
-      sourceChain,
-      mintTimestamp: currentTimestamp,
-      callerAddress: caller,
-      senderBytes32: sender,
-      finalityThreshold: finalityThresholdExecuted.toString(),
-      status: "orphaned",
-      reason: burnData ? "corrupt_burn_data" : "no_burn_data",
+      dc: destChain,
+      dci: event.network,
+      dtx: event.hash,
+      dblk: event.blockNumber,
+      n: burnData && burnData.n ? burnData.n : undefined,
+      h: nonceHex,
+      sd: Number(sourceDomain),
+      sc: sourceChain,
+      mt: currentTimestamp,
+      c: caller,
+      s: sender,
+      ft: Number(finalityThresholdExecuted),
     };
 
     try {
