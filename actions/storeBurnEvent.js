@@ -306,37 +306,198 @@ const storeBurnEvent = async (context, event) => {
     const orphanedIndexKey = `cctp:orphanedIndex:${sourceChain}:${messageHash}`;
     const orphanedIndex = await storage.getJson(orphanedIndexKey).catch(() => null);
     if (orphanedIndex && orphanedIndex.pointer) {
-      const completedKey = `cctp:completed:${sourceChain}:${messageHash}`;
-      const completed = {
-        nonce: burnData.nonce,
-        messageHash: messageHash,
-        messageBody: burnData.messageBody,
-        sourceChain: burnData.sourceChain,
-        sourceChainId: burnData.sourceChainId,
-        sourceTxHash: burnData.sourceTxHash,
-        sourceBlockNumber: burnData.sourceBlockNumber,
-        burnToken: burnData.burnToken,
-        amount: burnData.amount,
-        depositor: burnData.depositor,
-        mintRecipient: burnData.mintRecipient,
-        destinationDomain: burnData.destinationDomain,
-        destinationChain: destChain,
-        destinationChainId: null,
-        destinationTxHash: null,
-        destinationBlockNumber: null,
-        destinationTokenMessenger: burnData.destinationTokenMessenger,
-        destinationCaller: burnData.destinationCaller,
-        maxFee: burnData.maxFee,
-        minFinalityThreshold: burnData.minFinalityThreshold,
-        transferType: burnData.transferType || "unknown",
-        hookData: burnData.hookData,
-        burnTimestamp: burnData.burnTimestamp,
-        mintTimestamp: null,
-        status: "pending-mint",
-      };
-      await storage.putJson(completedKey, completed, { ttl: 2592000 });
-      await storage.delete(orphanedIndexKey).catch(() => {});
-      await storage.delete(orphanedIndex.pointer).catch(() => {});
+      const orphanedMintData = await storage.getJson(orphanedIndex.pointer).catch(() => null);
+      if (orphanedMintData) {
+        let duration = null;
+        if (burnData.burnTimestamp && orphanedMintData.mintTimestamp) {
+          duration = orphanedMintData.mintTimestamp - burnData.burnTimestamp;
+        }
+
+        const completedKey = `cctp:completed:${sourceChain}:${messageHash}`;
+        const completed = {
+          nonce: burnData.nonce,
+          messageHash: messageHash,
+          messageBody: burnData.messageBody,
+          sourceChain: burnData.sourceChain,
+          sourceChainId: burnData.sourceChainId,
+          sourceTxHash: burnData.sourceTxHash,
+          sourceBlockNumber: burnData.sourceBlockNumber,
+          burnToken: burnData.burnToken,
+          amount: burnData.amount,
+          depositor: burnData.depositor,
+          mintRecipient: burnData.mintRecipient,
+          destinationDomain: burnData.destinationDomain,
+          destinationChain: orphanedMintData.destinationChain || destChain,
+          destinationChainId: orphanedMintData.destinationChainId || null,
+          destinationTxHash: orphanedMintData.destinationTxHash || null,
+          destinationBlockNumber: orphanedMintData.destinationBlockNumber || null,
+          destinationTokenMessenger: burnData.destinationTokenMessenger,
+          destinationCaller: burnData.destinationCaller,
+          maxFee: burnData.maxFee,
+          minFinalityThreshold: burnData.minFinalityThreshold,
+          transferType: burnData.transferType || "unknown",
+          hookData: burnData.hookData,
+          burnTimestamp: burnData.burnTimestamp,
+          mintTimestamp: orphanedMintData.mintTimestamp || null,
+          messageReceived: {
+            caller: orphanedMintData.callerAddress,
+            sender: orphanedMintData.senderBytes32,
+            finalityThresholdExecuted: orphanedMintData.finalityThreshold,
+          },
+          status: "completed",
+          durationSeconds: duration,
+        };
+
+        await storage.putJson(completedKey, completed, { ttl: 2592000 });
+        await storage.delete(orphanedIndexKey).catch(() => {});
+        await storage.delete(orphanedIndex.pointer).catch(() => {});
+
+        const slackWebhook = await context.secrets.get("SLACK_WEBHOOK_URL");
+        if (slackWebhook) {
+          const formatUSDC = (amountStr) => {
+            try {
+              const amountBigInt = BigInt(amountStr);
+              const decimals = 6;
+              const divisor = BigInt(10 ** decimals);
+              const whole = amountBigInt / divisor;
+              const fractional = amountBigInt % divisor;
+
+              if (fractional === 0n) {
+                return `${whole.toLocaleString()} USDC`;
+              }
+
+              const fractionalStr = fractional.toString().padStart(decimals, "0");
+              const trimmed = fractionalStr.replace(/0+$/, "");
+              return `${whole.toLocaleString()}.${trimmed} USDC`;
+            } catch (e) {
+              return `${amountStr} (raw)`;
+            }
+          };
+
+          const formatDuration = (seconds) => {
+            if (!seconds) return "N/A";
+            if (seconds < 60) return `${seconds}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+            const hours = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            return `${hours}h ${mins}m`;
+          };
+
+          const capitalizeChain = (chainName) => {
+            if (!chainName) return chainName;
+            return chainName.charAt(0).toUpperCase() + chainName.slice(1);
+          };
+
+          const formattedAmount = formatUSDC(completed.amount);
+          const duration = formatDuration(completed.durationSeconds);
+          const transferType = completed.transferType || "unknown";
+          const typeEmoji = transferType === "fast" ? "⚡" : "📋";
+          const sourceChainName = capitalizeChain(completed.sourceChain);
+          const destChainName = capitalizeChain(completed.destinationChain || destChain);
+
+          const blocks = [
+            {
+              type: "header",
+              text: {
+                type: "plain_text",
+                text: `${typeEmoji} CCTP Transfer Completed`,
+                emoji: true,
+              },
+            },
+            {
+              type: "divider",
+            },
+            {
+              type: "section",
+              fields: [
+                {
+                  type: "mrkdwn",
+                  text: `*🔄 Route*\n*${sourceChainName}* → *${destChainName}*`,
+                },
+                {
+                  type: "mrkdwn",
+                  text: `*${typeEmoji} Type*\n${transferType.toUpperCase()}`,
+                },
+                {
+                  type: "mrkdwn",
+                  text: `*💰 Amount*\n*${formattedAmount}*`,
+                },
+                {
+                  type: "mrkdwn",
+                  text: `*⏱️ Duration*\n${duration}`,
+                },
+              ],
+            },
+            {
+              type: "divider",
+            },
+            {
+              type: "section",
+              fields: [
+                {
+                  type: "mrkdwn",
+                  text: `*📤 Source Chain*\n<https://tdly.co/tx/${completed.sourceTxHash}|${sourceChainName}>\nBlock: ${completed.sourceBlockNumber || "N/A"}`,
+                },
+                {
+                  type: "mrkdwn",
+                  text: `*📥 Destination Chain*\n<https://tdly.co/tx/${completed.destinationTxHash || "N/A"}|${destChainName}>\nBlock: ${completed.destinationBlockNumber || "N/A"}`,
+                },
+              ],
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `*🔑 Message Hash*\n\`${messageHash}\``,
+              },
+            },
+          ];
+
+          const contextElements = [];
+          if (completed.minFinalityThreshold) {
+            contextElements.push({
+              type: "mrkdwn",
+              text: `Finality: ${completed.minFinalityThreshold}`,
+            });
+          }
+          if (completed.depositor) {
+            contextElements.push({
+              type: "mrkdwn",
+              text: `Depositor: \`${completed.depositor}\``,
+            });
+          }
+          if (completed.maxFee && completed.maxFee !== "0") {
+            const feeFormatted = formatUSDC(completed.maxFee);
+            contextElements.push({
+              type: "mrkdwn",
+              text: `Max Fee: ${feeFormatted}`,
+            });
+          }
+
+          if (contextElements.length > 0) {
+            blocks.push({
+              type: "context",
+              elements: contextElements,
+            });
+          }
+
+          const msg = {
+            blocks: blocks,
+            text: `CCTP ${transferType} transfer: ${formattedAmount} from ${sourceChainName} to ${destChainName}`,
+          };
+
+          try {
+            await fetch(slackWebhook, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(msg),
+            });
+            await storage.delete(completedKey);
+          } catch (notifyError) {
+            console.error(`[BURN] Error sending Slack notification: ${notifyError.message}`);
+          }
+        }
+      }
     }
   } catch (_) {}
 };
