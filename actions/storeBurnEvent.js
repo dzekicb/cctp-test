@@ -196,8 +196,8 @@ const storeBurnEvent = async (context, event) => {
       }
     } catch (e) {
       console.error(`[BURN] Failed to decode any MessageSent: ${e.message}`);
-      return;
-    }
+    return;
+  }
   }
 
   const msgBytes = ethers.getBytes(messageBytes);
@@ -240,7 +240,7 @@ const storeBurnEvent = async (context, event) => {
         statKey,
         { count: (existing.count || 0) + 1, lastSeen: Math.floor(Date.now() / 1000) },
         { ttl: 2592000 },
-      );
+    );
     } catch (_) {}
     return;
   }
