@@ -104,8 +104,7 @@ const matchMintEvent = async (context, event) => {
       await storage.putJson(
         statKey,
         { count: (existing.count || 0) + 1, lastSeen: Math.floor(Date.now() / 1000) },
-        { ttl: 2592000 },
-    );
+      );
     } catch (_) {}
     return;
   }
@@ -191,7 +190,7 @@ const matchMintEvent = async (context, event) => {
     const completedKey = `cctp:completed:${sourceChain}:${nonceHex}`;
 
     try {
-      await storage.putJson(completedKey, completeTransfer, { ttl: 2592000 });
+      await storage.putJson(completedKey, completeTransfer);
       await storage.delete(trackingKey);
 
       const slackWebhook = await context.secrets.get("SLACK_WEBHOOK_URL");
@@ -368,11 +367,10 @@ const matchMintEvent = async (context, event) => {
     };
 
     try {
-      await storage.putJson(orphanedKey, orphanedData, { ttl: 604800 });
+      await storage.putJson(orphanedKey, orphanedData);
       await storage.putJson(
         orphanedIndexKey,
         { pointer: orphanedKey, createdAt: currentTimestamp, src: sourceChain, dst: destChain },
-        { ttl: 604800 },
       );
 
       const webhookUrl = await context.secrets.get("WEBHOOK_URL");

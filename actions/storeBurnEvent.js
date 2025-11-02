@@ -239,8 +239,7 @@ const storeBurnEvent = async (context, event) => {
       await storage.putJson(
         statKey,
         { count: (existing.count || 0) + 1, lastSeen: Math.floor(Date.now() / 1000) },
-        { ttl: 2592000 },
-    );
+      );
     } catch (_) {}
     return;
   }
@@ -276,13 +275,13 @@ const storeBurnEvent = async (context, event) => {
   }
 
   try {
-    await storage.putJson(trackingKey, burnData, { ttl: 604800 });
+    await storage.putJson(trackingKey, burnData);
 
     if (messageBodyFromSent) {
       try {
         const messageBodyHash = ethers.keccak256(messageBodyFromSent).toLowerCase();
         const fallbackKey = `cctp:burn:${sourceChain}:body:${messageBodyHash}`;
-        await storage.putJson(fallbackKey, { k: trackingKey }, { ttl: 604800 });
+        await storage.putJson(fallbackKey, { k: trackingKey });
       } catch (_) {}
     }
   } catch (writeErr) {
@@ -330,7 +329,7 @@ const storeBurnEvent = async (context, event) => {
           dur: duration,
         };
 
-        await storage.putJson(completedKey, completed, { ttl: 2592000 });
+        await storage.putJson(completedKey, completed);
         await storage.delete(orphanedIndexKey).catch(() => {});
         await storage.delete(orphanedIndex.pointer).catch(() => {});
 
